@@ -1,0 +1,79 @@
+steps:
+  # - id: "Build community builders image for terraform"
+  #   name: "gcr.io/cloud-builders/git"
+  #   entrypoint: 'bash'
+  #   args:
+  #   - '-c'
+  #   - |
+  #     git clone https://github.com/GoogleCloudPlatform/cloud-builders-community
+  #     cd cloud-builders-community/terraform
+  #     gcloud builds submit --config cloudbuild.yaml .
+  #     cd ..
+
+  - id: "Build client docker image"
+    name: "gcr.io/cloud-builders/docker"
+    entrypoint: 'bash'
+    args:
+    - '-c'
+    - |
+      cd client
+      docker build . -t ${_MULTIREGION}-docker.pkg.dev/${PROJECT_ID}/dronegaga-artifact-registry/game-client
+      docker push ${_MULTIREGION}-docker.pkg.dev/${PROJECT_ID}/dronegaga-artifact-registry/game-client
+
+      cd ..
+
+  - id: "Build server docker image"
+    name: "gcr.io/cloud-builders/docker"
+    entrypoint: 'bash'
+    args:
+    - '-c'
+    - |
+      cd server
+      docker build . -t ${_MULTIREGION}-docker.pkg.dev/${PROJECT_ID}/dronegaga-artifact-registry/game-server
+      docker push ${_MULTIREGION}-docker.pkg.dev/${PROJECT_ID}/dronegaga-artifact-registry/game-server
+
+      cd ..
+
+  - id: "Setup gcloud & get latest docker digest"
+    name: "gcr.io/cloud-builders/gcloud"
+    entrypoint: 'bash'
+    args:
+    - '-c'
+    - |
+      gcloud config set project ${PROJECT_ID}
+      gcloud auth configure-docker ${_MULTIREGION}-docker.pkg.dev
+
+      gameserverSHA=`gcloud beta artifacts docker images list ${_MULTIREGION}-docker.pkg.dev/group4-3m4/dronegaga-artifact-registry/game-server --limit=1 --sort-by=~CREATE_TIME | grep -w sha256 | cut -d ':' -f 2`
+      gameserverSHA=${gameserverSHA:0:64}
+      echo "$gameserverSHA"
+
+      gameclientSHA=`gcloud beta artifacts docker images list ${_MULTIREGION}-docker.pkg.dev/group4-3m4/dronegaga-artifact-registry/game-client --limit=1 --sort-by=~CREATE_TIME | grep -w sha256 | cut -d ':' -f 2`
+      gameclientSHA=${gameclientSHA:0:64}
+      echo "$gameclientSHA"
+
+      echo "$gameserverSHA" > /workspace/gameserverSHA.txt
+      echo "$gameclientSHA" > /workspace/gameclientSHA.txt
+
+  - id: "Deploy cloud run for game client and game server"
+    name: "gcr.io/${PROJECT_ID}/terraform"
+    entrypoint: 'bash'
+    args:
+    - '-c' 
+    - |
+
+      gameserverSHA=$(cat /workspace/gameserverSHA.txt)
+      gameclientSHA=$(cat /workspace/gameclientSHA.txt)
+
+      gcloud config list account --format "value(core.account)"
+      gcloud auth configure-docker ${_MULTIREGION}-docker.pkg.dev
+
+      terraform init -reconfigure -backend-config="bucket=${PROJECT_ID}-terraform-files" -backend-config="prefix=terraform/${_MULTIREGION}/cloud-run/state"
+      terraform apply -auto-approve -var project_id=${PROJECT_ID} -var region=${_REGION} -var multiregion=${_MULTIREGION} -var gameserverSHA=$gameserverSHA -var gameclientSHA=$gameclientSHA
+
+substitutions:
+    _REGION: asia-southeast1 # default value
+    _MULTIREGION: asia # default value
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
